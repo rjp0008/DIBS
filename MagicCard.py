@@ -1,13 +1,16 @@
 from discord.ext import commands
+from discord import File
 import urllib.request as ur
 from bs4 import BeautifulSoup, Tag
 import re
-import os
+import aiohttp
+import io
 
 MESSAGE_LIMIT = 1800
 
-class MagicCard:
-    def __init__(self,bot):
+
+class MagicCard(commands.Cog):
+    def __init__(self, bot):
         self.bot = bot
         self.cardName = ''
         self.cardId = -1
@@ -17,196 +20,159 @@ class MagicCard:
         for x in strings:
             name += x + " "
         return name.strip()
-        
+
     def mana_convert(self, text):
-        if(text == 'Blue'):
+        if text == 'Blue':
             return "U"
-        elif(text == 'Black'):
+        elif text == 'Black':
             return "B"
-        elif(text == 'Green'):
+        elif text == 'Green':
             return "G"
-        elif(text == 'White'):
+        elif text == 'White':
             return "W"
-        elif(text == 'Red'):
+        elif text == 'Red':
             return "R"    
-        elif(text == 'Variable Colorless'):
+        elif text == 'Variable Colorless':
             return "X"
         else:
             return text
 
-    def card_check(self):
+    async def card_check(self):
         try:
-            page = ur.urlopen("http://gatherer.wizards.com/Pages/Card/Details.aspx?name=%s" % ur.quote(self.cardName)).read().decode('utf-8')
-            return re.search('multiverseid=([0-9]*)', page).group(1)
+            async with aiohttp.request('GET', "http://gatherer.wizards.com/Pages/Card/Details.aspx?name=%s" %
+                                              ur.quote(self.cardName)) as resp:
+                return re.search('multiverseid=([0-9]*)', await resp.text()).group(1)
         except AttributeError:
             return False
-    
-    		
-    def card_text(self):
+
+    async def card_text(self):
         link = "http://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=%s" % self.cardId
-        page = ur.urlopen(link).read()
+        async with aiohttp.request('GET', link) as resp:
         
-        soup = BeautifulSoup(page, 'html.parser')
-        ret = ""
-        
-        for link in soup.find_all('div', class_="row"):
-            #Get the label ie Card Name:, Mana cost:, etc
-            ret += "**" + link.find('div', class_="label").get_text().strip() + "**"
+            soup = BeautifulSoup(await resp.read(), 'html.parser')
+            ret = ""
             
-            #Get the values for the labels
-            value = link.find('div', class_="value")
-    
-            #This case is for the card text and it requires special parsing
-            for text in value.find_all('div', class_="cardtextbox"):
-                ret += "\n"
-                for fields in text.descendants:
-                    if isinstance(fields, Tag):
-                        if fields.has_attr('alt'):
-                            ret += "%s" % self.mana_convert(fields['alt'])
-                    else:
-                        ret += fields
+            for link in soup.find_all('div', class_="row"):
+                # Get the label ie Card Name:, Mana cost:, etc
+                ret += "**" + link.find('div', class_="label").get_text().strip() + "**"
                 
-            #Get all the text (This includes child text but it is ok)
-            if(not value.find('div', class_="cardtextbox")):
-                #find mana symbols and convert to text
-                for alt in value.find_all('img'):
-                    ret += self.mana_convert(alt['alt'])
-                if(not value.find('img')):
-                    ret += " %s" %value.get_text().strip()
-            ret += "\n"
-        return ret
+                # Get the values for the labels
+                value = link.find('div', class_="value")
+        
+                # This case is for the card text and it requires special parsing
+                for text in value.find_all('div', class_="cardtextbox"):
+                    ret += "\n"
+                    for fields in text.descendants:
+                        if isinstance(fields, Tag):
+                            if fields.has_attr('alt'):
+                                ret += "%s" % self.mana_convert(fields['alt'])
+                        else:
+                            ret += fields
+                    
+                # Get all the text (This includes child text but it is ok)
+                if not value.find('div', class_="cardtextbox"):
+                    # find mana symbols and convert to text
+                    for alt in value.find_all('img'):
+                        ret += self.mana_convert(alt['alt'])
+                    if not value.find('img'):
+                        ret += " %s" % value.get_text().strip()
+                ret += "\n"
+            return ret
     
-    def card_image(self):
+    async def card_image(self):
         link = "http://gatherer.wizards.com/Handlers/Image.ashx?multiverseid=%s&type=card" % self.cardId
-        imgname = self.cardId + ".jpg"
-        ur.urlretrieve(link, imgname)
-        return imgname
-    
-    def card_price(self):
-        noPrice = "---------------------------------\n"
-        noPrice += "No pricing data found\n"
-        noPrice += "---------------------------------"
-        fmtName = ur.quote('+'.join(self.cardName.split(' ')), '/+')
-        link = 'http://www.mtgstocks.com/cards/search?utf8=%E2%9C%93&print%5Bcard%5D={}&button='.format(fmtName)
-        try:
-            page = ur.urlopen(link).read()
-        except:
-            return noPrice
-            
-        soup = BeautifulSoup(page, 'html.parser')
-        if soup.find('td', class_="lowprice") is None:
-            return noPrice
-        else:
-            ret = "---------------------------------\n"
-            ret += "MTGStocks High: " + soup.find('td', class_="highprice").get_text() + "\n"
-            ret += "MTGStocks Average: " + soup.find('td', class_="avgprice").get_text() + "\n"
-            ret += "MTGStocks Low: " + soup.find('td', class_="lowprice").get_text() + "\n"
-            ret += "---------------------------------"
-        return ret
+        async with aiohttp.request('GET', link) as resp:
+            return io.BytesIO(await resp.read())
         
-    def card_rulings(self):
+    async def card_rulings(self):
         link = "http://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=%s" % self.cardId
-        page = ur.urlopen(link).read()
+        async with aiohttp.request('GET', link) as resp:
         
-        soup = BeautifulSoup(page, 'html.parser')
-        ret = []
-        ret.append("")
+            soup = BeautifulSoup(await resp.read(), 'html.parser')
+            ret = [""]
+
+            for link in soup.find_all('td', class_="rulingsText"):
+                text = "-" + link.get_text().strip() + "\n"
+                # If one single ruling is bigger than message limit
+                if len(text) > MESSAGE_LIMIT:
+                    ret[-1].append([text[i:i + MESSAGE_LIMIT] for i in range(0, len(text), MESSAGE_LIMIT)])
+                # If multiple rulings are bigger than message limit
+                elif len(ret[-1]) + len(text) > MESSAGE_LIMIT:
+                    ret.append(text)
+                else:
+                    ret[-1] += text
+            if ret[0] is "":
+                ret[0] = "No rulings found for card: " + self.cardName
+                
+            return ret
         
-        for link in soup.find_all('td', class_="rulingsText"):
-            text = "-" + link.get_text().strip() + "\n";
-            #If one single ruling is bigger than message limit
-            if len(text) > MESSAGE_LIMIT:
-                ret[-1].append([text[i:i + MESSAGE_LIMIT] for i in range(0, len(text), MESSAGE_LIMIT)])
-            #If multiple rulings are bigger than message limit
-            elif len(ret[-1]) + len(text) > MESSAGE_LIMIT:
-                ret.append(text)
-            else:
-                ret[-1] += text
-        if ret[0] is "":
-            ret[0] = "No rulings found for card: " + self.cardName
-            
-        return ret
-        
-    def card_legality(self):
+    async def card_legality(self):
         link = "http://gatherer.wizards.com/Pages/Card/Printings.aspx?multiverseid=%s" % self.cardId
-        page = ur.urlopen(link).read()
+        async with aiohttp.request('GET', link) as resp:
         
-        soup = BeautifulSoup(page, 'html.parser')
-        ret = ""
+            soup = BeautifulSoup(await resp.read(), 'html.parser')
+            ret = ""
+            
+            for link in soup.find_all('tr', class_="cardItem"):
+                column = link.find('td', class_="column1")
+                # this avoids the top table
+                if column is not None:
+                    ret += "**" + link.find('td', class_="column1").get_text().strip() + "**"
+                    ret += ": " + link.find('td', attrs={'style': 'text-align:center;'}).get_text().strip() + "\n"
+            
+            if ret is "":
+                ret = "No legality found for card: " + self.cardName
+                
+            return ret
         
-        for link in soup.find_all('tr', class_="cardItem"):
-            column = link.find('td', class_="column1");
-            #this avoids the top table
-            if column is not None:
-                ret += "**" + link.find('td', class_="column1").get_text().strip() + "**"
-                ret += ": " + link.find('td', attrs={'style':'text-align:center;'}).get_text().strip() + "\n"
-        
-        if ret is "":
-            ret = "No legality found for card: " + self.cardName
-            
-        return ret
-        
     @commands.command()
-    async def mtg(self,*strings : str):
+    async def mtg(self, ctx, *strings: str):
         self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
+        self.cardId = await self.card_check()
         if self.cardId:
-            reply = self.card_text()
-            reply += self.card_price()
-            imgname = self.card_image()
-            await self.bot.upload(imgname, content=reply)
-            os.remove(imgname)
+            reply = await self.card_text()
+            img_name = self.cardName + ".png"
+            await ctx.send(reply, file=File(await self.card_image(), img_name))
         else:
-            await self.bot.say("Could not find card: " + self.cardName)
+            await ctx.send("Could not find card: " + self.cardName)
             
     @commands.command()
-    async def mtgtext(self, *strings : str):
+    async def mtgtext(self, ctx, *strings: str):
         self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
+        self.cardId = await self.card_check()
         if self.cardId:
-            reply = self.card_text()
-            await self.bot.say(reply)
+            reply = await self.card_text()
+            await ctx.send(reply)
         else:
-            await self.bot.say("Could not find card: " + self.cardName)
+            await ctx.send("Could not find card: " + self.cardName)
             
     @commands.command()
-    async def mtgimage(self, *strings : str):
+    async def mtgimage(self, ctx, *strings: str):
         self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
+        self.cardId = await self.card_check()
+        img_name = self.cardName + ".png"
         if self.cardId:
-            imgname = self.card_image()
-            await self.bot.upload(imgname)
-            os.remove(imgname)
+            await ctx.send(file=File(await self.card_image(), img_name))
         else:
-            await self.bot.say("Could not find card: " + self.cardName)
+            await ctx.send("Could not find card: " + self.cardName)
             
     @commands.command()
-    async def mtgprice(self, *strings : str):
+    async def mtgrulings(self, ctx, *strings: str):
         self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
+        self.cardId = await self.card_check()
         if self.cardId:
-            reply = self.card_price()
-            await self.bot.say(reply)
-        else:
-            await self.bot.say("Could not find card: " + self.cardName)
-            
-    @commands.command()
-    async def mtgrulings(self, *strings : str):
-        self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
-        if self.cardId:
-            reply = self.card_rulings()
+            reply = await self.card_rulings()
             for msg in reply:
-                await self.bot.say(msg)
+                await ctx.send(msg)
         else:
-            await self.bot.say("Could not find card: " + self.cardName)
+            await ctx.send("Could not find card: " + self.cardName)
             
     @commands.command()
-    async def mtglegality(self, *strings : str):
+    async def mtglegality(self, ctx, *strings: str):
         self.cardName = self.combine_str(strings)
-        self.cardId = self.card_check()
+        self.cardId = await self.card_check()
         if self.cardId:
-            reply = self.card_legality()
-            await self.bot.say(reply)
+            reply = await self.card_legality()
+            await ctx.send(reply)
         else:
-            await self.bot.say("Could not find card: " + self.cardName)
+            await ctx.send("Could not find card: " + self.cardName)
